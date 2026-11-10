@@ -1,6 +1,7 @@
 # paperKB — peS2o 论文知识库搜索工具包
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![CI](https://github.com/aidless/paperKB/actions/workflows/ci.yml/badge.svg)](https://github.com/aidless/paperKB/actions/workflows/ci.yml)
 
 > **这不是 Obsidian 笔记应用**。这是一个 FAISS + SQLite 工具包，用于在大型论文
 > 知识库（peS2o，54 万+ 篇）上做语义检索、健康检查、去重重建与增量合并。名字
@@ -83,6 +84,55 @@ CI 跳过。
 - 不证明**检索无漏**：纯向量检索 + 固定嵌入模型会有语义边界外的漏检，工具包
   只做检索不做覆盖度证明。
 - 工具包是**本地工具链**，不是分布式服务；并发写入无锁，单进程使用。
+- `KB_DIR`（`kb_search.py:53`）与磁盘检查盘符硬编码；换机需 sed/手改路径（上面的
+  实跑示例给出一条完整 Linux 通道）。
+- 健康检查的 freshness/disk 维度绑定了 daily_grow 与宿主盘符：`kb_health` 在真实
+  KB 上 2026-11-10 实跑给出 DANGER（exit 2）——freshness 1901h 未增量抓取 + 宿主盘
+  余量 <5%；一致性维度（FAISS vs SQLite +0.0%、抽样 2000/2000）全过。DANGER 是
+  如实报警，不是工具故障。
+
+## 索引规模与数据来源（2026-11-10 实测，/data1/peS2o_kb_faiss）
+
+| 项 | 值 | 测法 |
+|---|---|---|
+| FAISS 主索引 | 580,285 条向量（d=384），850.03 MB | `faiss.read_index().ntotal` |
+| SQLite 元数据 | papers 表 580,285 行，papers_fts 580,285 行，papers.db 4.79 GB | sqlite3 `SELECT count(*)` |
+| ID 文件 | paper_ids.txt 580,285 行 | `wc -l` |
+| 来源构成 | peS2o 数字 ID 332,028（57.2%）· arXiv 248,169（42.8%，daily_grow 增量抓取）· peS2o SHA1 88 | 按 ID 格式正则分类 |
+| 一致性 | 主 FAISS vs SQLite 差 +0（0.0%）；抽样 2000/2000 全命中 | `kb_health` |
+| gap 索引 | 不存在（已合并，status=ok） | `kb_health` |
+
+（来源构成与一致性数字取自 `kb_health.py` 实跑输出；总数与向量数用 faiss/sqlite/wc 独立复算一致。）
+
+## kb_search 实跑示例（Linux，真实查询）
+
+`KB_DIR` 与模型路径硬编码（见下），Linux 上用一条 sed 生成临时副本指向本地 KB：
+
+```bash
+sed -e 's|E:/peS2o_kb_faiss|/data1/peS2o_kb_faiss|' \
+    -e "s|MODEL_NAME = 'all-MiniLM-L6-v2'|MODEL_NAME = '/data1/peS2o_kb_faiss/models/all-MiniLM-L6-v2'|" \
+    kb_search.py > /tmp/kb_search_linux.py
+python3 /tmp/kb_search_linux.py "KV cache eviction policy" -n 5
+```
+
+真实输出（Top-5，0.010s，2026-11-10）：
+
+```text
+  Query: "KV cache eviction policy"
+  KB: 580,285 FAISS vectors / 580,285 unique IDs
+  Top-5 results in 0.010s
+
+  # 1 | score=1.1322  Risk-Controlled KV-Cache Eviction: From Memory Budgets to Risk Targets
+        [arXiv] arxiv:2609.27981 | 2026 | cs.CL,cs.LG
+  # 2 | score=1.0964  A Probabilistic Interpretation of KV Cache Eviction
+        [arXiv] arxiv:2608.28293 | 2026 | cs.CL,cs.AI
+  # 3 | score=1.0593  Error Certificates for KV-Cache Eviction via Randomized Design
+        [arXiv] arxiv:2607.21475 | 2026 | cs.LG,cs.AI,cs.CL
+  # 4 | score=1.0092  KVpop -- Key-Value Cache Compression with Predictive Online Pruning
+        [arXiv] arxiv:2607.05061 | 2026 | cs.CL,cs.AI
+  # 5 | score=1.0040  Leyline: KV Cache Directives for Agentic Inference
+        [arXiv] arxiv:2606.01065 | 2026 | cs.DC cs.AI cs.LG
+```
 
 ## 快速开始
 
