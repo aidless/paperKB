@@ -1,5 +1,7 @@
 # paperKB — peS2o 论文知识库搜索工具包
 
+> **English TL;DR**: A five-script toolkit for semantic search over a peS2o paper knowledge base, with timeout-safe search, a fail-closed health check, atomic gap-index merge, deduplication/reindex, and bias-aware reranking. Its 19 mock-based unit tests were re-run locally in this pass; the 580,285-vector index figures come from a historical measurement on an external disk that is not part of this repository and were **not** recomputable here.
+
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/aidless/paperKB/actions/workflows/ci.yml/badge.svg)](https://github.com/aidless/paperKB/actions/workflows/ci.yml)
 
@@ -191,3 +193,38 @@ tests/
 - `CICD_DEPLOYMENT_CHECKLIST.md`：部署与 CI/CD 检查清单（279 行）
 - `CHANGELOG_2026-07-09.md`：去重重建修复记录
 - `SECURITY.md`：安全声明
+
+## U1 results table (recomputed 2026-11-11)
+
+| Live check | Value | Source |
+|---|---|---|
+| Mock unit tests, executed for this pass | **Ran 19 tests in 15.103s / OK** | `python3 -X utf8 -m unittest tests.test_kb_search_unit` (exit 0) |
+| Unit-test target file | `tests/test_kb_search_unit.py` | `README.md:50`, `README.md:169` |
+| Mock KB size used by tests | 100 papers | `README.md:50` |
+| Historical CI unit-test runs | `Ran 19 tests in 17.152s, OK` / `Ran 19 tests in 13.079s, OK` | `CICD_DEPLOYMENT_CHECKLIST.md:57`, `CICD_DEPLOYMENT_CHECKLIST.md:61` |
+| Dedup / rebuild record | SQLite 257 duplicate kinds, FAISS 33K duplicates, 14,593 missing IDs backfilled, `pct_all` → ≈0% | `README.md:56`, `CICD_DEPLOYMENT_CHECKLIST.md:4` |
+| Consistency spot-check (historical) | FAISS vs SQLite +0 (0.0%), 2000/2000 sample hits | `README.md:102`, `README.md:91` |
+
+**Quickstart command actually executed for this pass**:
+
+```bash
+python3 -X utf8 -m unittest tests.test_kb_search_unit
+# Ran 19 tests in 15.103s
+# OK   (exit 0)
+```
+
+**NOT YET MEASURED / not recomputable in this pass**: the real-index numbers
+in the existing section above (580,285 FAISS vectors, 580,285 SQLite rows,
+850.03 MB index, 4.79 GB database, Top-5 in 0.010s — `README.md:98-100`,
+`README.md:118-123`). They were measured on `/data1/peS2o_kb_faiss`, which is
+not in this repository; `KB_DIR` is still a Windows path
+(`kb_search.py:53`, see `README.md:156`). Reproduce only on a host with the
+real KB:
+
+```bash
+python3 -X utf8 -m unittest tests.test_kb_search_unit -v   # offline mock path
+python3 kb_health.py                                       # requires real KB_DIR
+python3 -X utf8 -m unittest tests.test_kb_search -v        # requires real 8GB KB
+```
+
+<!-- figure: pending real measurement -->
