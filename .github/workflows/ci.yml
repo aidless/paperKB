@@ -31,14 +31,14 @@ jobs:
       # Step 1: 拉代码 (官方 action, 几乎不会卡, 但还是加保护)
       # ─────────────────────────────────────────────────────────
       - name: Checkout
-        actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         timeout-minutes: 2
 
       # ─────────────────────────────────────────────────────────
       # Step 2: Python 环境
       # ─────────────────────────────────────────────────────────
       - name: Setup Python
-        actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: '3.12'
           cache: 'pip'
@@ -126,7 +126,7 @@ jobs:
       - name: Upload test logs
         if: always()
         timeout-minutes: 1
-        actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: test-logs
           path: unittest_output.log
@@ -140,7 +140,7 @@ jobs:
     # take effect until the branch is regenerated. Pinned, not latest.
     runs-on: ubuntu-latest
     steps:
-      - actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
       - name: gitleaks (full history)
