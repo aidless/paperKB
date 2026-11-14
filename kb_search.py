@@ -37,7 +37,6 @@ import sqlite3
 import sys
 import time
 from contextlib import contextmanager
-from typing import Optional
 from pathlib import Path
 
 os.environ.setdefault('HF_ENDPOINT', 'https://hf-mirror.com')
@@ -441,7 +440,7 @@ def _search_impl(
         )
     except TimeoutError_ as e:
         print(f'  ⚠ {e}', file=sys.stderr)
-        print(f'  → 退化为: 仅返回已加载的部分 (空结果)')
+        print('  → 退化为: 仅返回已加载的部分 (空结果)')
         return []
 
     existing_ids = set()
@@ -630,7 +629,7 @@ def _search_impl(
 def interactive_mode():
     load_resources()
     print(f'\n{"="*78}')
-    print(f'  KB Search — Interactive Mode')
+    print('  KB Search — Interactive Mode')
     print(f'  Index: {Path(FAISS_INDEX).stat().st_size / 1e9:.2f} GB | {Path(SQLITE_DB).stat().st_size / 1e9:.2f} GB')
     print(f'{"="*78}')
     print('  Commands:')

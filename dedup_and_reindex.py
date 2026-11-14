@@ -573,7 +573,7 @@ def main():
     log('═══════════════════════════════════════════════════════════')
     log('  dedup_and_reindex.py — 重建主索引(去重 + 补 14K)')
     log(f'  KB: {KB_DIR}')
-    log(f'  模式: ' + ('DRY-RUN' if args.dry_run else
+    log('  模式: ' + ('DRY-RUN' if args.dry_run else
                        'SKIP-14K' if args.skip_14k else 'FULL'))
     log('═══════════════════════════════════════════════════════════')
 

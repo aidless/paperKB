@@ -25,7 +25,6 @@
 """
 from __future__ import annotations
 import argparse
-import json
 import os
 import shutil
 import sys
@@ -96,7 +95,7 @@ def phase0_prepare() -> dict:
     log(f'  合并后预计: {n_main + n_gap:,}')
 
     if n_gap > 500_000:
-        log(f'  ⚠ gap 向量数超过 50 万, 建议分批 merge (本次仍继续)')
+        log('  ⚠ gap 向量数超过 50 万, 建议分批 merge (本次仍继续)')
 
     return {
         'main_mtime': main_mtime, 'gap_mtime': gap_mtime,
@@ -125,7 +124,7 @@ def phase1_load_and_merge(stats: dict) -> tuple[object, list[str]]:
     log('  加载 paper_ids.txt (main) ...')
     with open(IDS_FILE, encoding='utf-8') as f:
         ids_main = [line.strip() for line in f if line.strip()]
-    log(f'  加载 papers_gap_ids.txt (gap) ...')
+    log('  加载 papers_gap_ids.txt (gap) ...')
     with open(IDS_GAP_FILE, encoding='utf-8') as f:
         ids_gap = [line.strip() for line in f if line.strip()]
 

@@ -12,12 +12,8 @@
   # 之后 kb_search.search() 跑的就是 mock 数据
 """
 from __future__ import annotations
-import os
-import random
 import sqlite3
-import sys
 from pathlib import Path
-from typing import List
 
 import numpy as np
 
@@ -120,7 +116,6 @@ class MockSentenceTransformer:
             base = self.rng.standard_normal(MOCK_DIM).astype('float32')
             base /= (np.linalg.norm(base) + 1e-9)
             # 把 base 投影偏向 matching paper 的真实向量
-            import faiss
             tmp_idx = _build_mock_index()
             matching_vecs = np.array(
                 [tmp_idx.reconstruct(m) for m in matching[:3]],

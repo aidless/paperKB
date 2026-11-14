@@ -18,7 +18,6 @@
   python -X utf8 tests/simulate_ci_timeout.py
 """
 from __future__ import annotations
-import os
 import subprocess
 import sys
 import time
@@ -54,8 +53,8 @@ def simulate_install_step() -> int:
     # 真实场景: pip install faiss-cpu 卡在 wheel 编译 / 网络阻塞
     cmd = [
         sys.executable, '-c',
-        f'import time; print("开始下载 (模拟卡死)", flush=True); '
-        f'time.sleep(30); print("永远到不了这里", flush=True)'
+        'import time; print("开始下载 (模拟卡死)", flush=True); '
+        'time.sleep(30); print("永远到不了这里", flush=True)'
     ]
     log_path = LOG_DIR / 'install_step.log'
     log_file = open(log_path, 'w', encoding='utf-8')
@@ -120,7 +119,7 @@ def simulate_unit_tests_step_with_log() -> int:
         log_file.close()
         return proc.returncode
     except subprocess.TimeoutExpired:
-        log(f'  ⚠ 测试超过 15s timeout, kill')
+        log('  ⚠ 测试超过 15s timeout, kill')
         proc.kill()
         proc.wait(timeout=5)
         log_file.close()
