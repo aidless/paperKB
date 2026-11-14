@@ -228,3 +228,28 @@ python3 -X utf8 -m unittest tests.test_kb_search -v        # requires real 8GB K
 ```
 
 <!-- figure: pending real measurement -->
+
+## 验收题库与复算
+
+`eval/cases.jsonl` 是 20 条可执行验收题，覆盖十二个口径（重排序年份加权与缺失
+year、类别加权只计一次与 hint 命中、查询扩展规则与 AI 上下文判定、BibTeX 键与
+arXiv/peS2o 两种字段导出、健康检查字节与行数格式、缺文件时的不抛异常降级、
+重建嵌入维度常量、单测声明条数现数，以及 README / PREREG / CI 三条文档口径）。
+验收判据：`python3 eval/run_cases.py` 必须 `20/20 cases passed` 且退出码 0，
+其中 **≥ 12 条**为 `expr`/`raises` 且**真调本仓库 API**（`smart_rerank` /
+`kb_search` / `kb_health` / `dedup_and_reindex`）或真读仓库内文件，期望值不抄
+文档、一律现算。
+
+```bash
+python3 eval/run_cases.py            # 20/20 cases passed
+python3 eval/run_cases.py --save     # 顺带把结果写进 eval/run-report.json
+python3 eval/run_cases.py --selftest # 篡改一条期望值，必须变红（19/20，证明这套题会失败）
+```
+
+**数字如何复算**：`eval/run-report.json` 里每条 case 都带 `id` / `axis` /
+`detail`，把 `detail` 与 `cases.jsonl` 的 `verify` 代码一起看，就能从源码复现该
+数字；`--save` 重跑一次即可重建整份报告，不需要手工抄数。`expr` 题的 `verify`
+末尾一律是 `result = ...`，可直接贴进 `python3 -c` 复算。
+
+**失败归因**：`run_cases.py` 不只报通过率，失败时按 `axis` 汇总（例如
+`rerank/year: 1 条 —— RY-01`），直接指出是哪个模块的哪个口径坏了。

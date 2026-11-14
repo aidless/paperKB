@@ -1,0 +1,129 @@
+{
+ "total": 20,
+ "passed": 20,
+ "failed": 0,
+ "selftest": false,
+ "failed_by_axis": {},
+ "results": [
+  {
+   "id": "RY-01",
+   "axis": "rerank/year",
+   "ok": true,
+   "detail": "0.8"
+  },
+  {
+   "id": "RY-02",
+   "axis": "rerank/year",
+   "ok": true,
+   "detail": "0.4"
+  },
+  {
+   "id": "RY-03",
+   "axis": "rerank/year",
+   "ok": true,
+   "detail": "0.5"
+  },
+  {
+   "id": "RC-01",
+   "axis": "rerank/category",
+   "ok": true,
+   "detail": "0.1"
+  },
+  {
+   "id": "RC-02",
+   "axis": "rerank/category",
+   "ok": true,
+   "detail": "0.05"
+  },
+  {
+   "id": "EX-01",
+   "axis": "expand/query",
+   "ok": true,
+   "detail": "rule:ttrl"
+  },
+  {
+   "id": "EX-02",
+   "axis": "expand/query",
+   "ok": true,
+   "detail": "mech+ai-context"
+  },
+  {
+   "id": "EX-03",
+   "axis": "expand/query",
+   "ok": true,
+   "detail": "False"
+  },
+  {
+   "id": "BX-01",
+   "axis": "bibtex/format",
+   "ok": true,
+   "detail": "adalovelace2024scaling"
+  },
+  {
+   "id": "BX-02",
+   "axis": "bibtex/format",
+   "ok": true,
+   "detail": "2502.19154"
+  },
+  {
+   "id": "BX-03",
+   "axis": "bibtex/format",
+   "ok": true,
+   "detail": "peS2o corpus (id=64690691)"
+  },
+  {
+   "id": "KH-01",
+   "axis": "kb_health/format",
+   "ok": true,
+   "detail": "1.50 KB"
+  },
+  {
+   "id": "KH-02",
+   "axis": "kb_health/format",
+   "ok": true,
+   "detail": "7"
+  },
+  {
+   "id": "KM-01",
+   "axis": "kb_health/missing",
+   "ok": true,
+   "detail": "0"
+  },
+  {
+   "id": "DD-01",
+   "axis": "dedup/constants",
+   "ok": true,
+   "detail": "384"
+  },
+  {
+   "id": "TS-01",
+   "axis": "tests/declared",
+   "ok": true,
+   "detail": "19"
+  },
+  {
+   "id": "RB-01",
+   "axis": "rerank/type-guard",
+   "ok": true,
+   "detail": "raised TypeError"
+  },
+  {
+   "id": "DR-01",
+   "axis": "doc/readme",
+   "ok": true,
+   "detail": "580,285 FAISS vectors"
+  },
+  {
+   "id": "DR-02",
+   "axis": "doc/prereg",
+   "ok": true,
+   "detail": "24h/72h 阈值"
+  },
+  {
+   "id": "DR-03",
+   "axis": "doc/ci",
+   "ok": true,
+   "detail": "python -X utf8 -m unittest tests.test_kb"
+  }
+ ]
+}
