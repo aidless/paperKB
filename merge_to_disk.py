@@ -1,48 +1,194 @@
 #!/usr/bin/env python3
-"""merge_to_disk.py — 把 gap 索引(增量)原子合并到主索引,并清空 gap
+"""merge_to_disk.py — 把 gap 索引(增量)合并进主索引,并清空 gap
 
-为什么需要这个脚本:
-  kb_search.py 里的 _index.merge_from(_gap) 是 in-memory 操作,
-  进程退出后 gap 仍在磁盘上, 下次冷启动会再次 merge.
-  本脚本做的是真正的"消化 gap":
-    1. 读 main + gap → in-memory merge
-    2. atomic swap 写回主索引
-    3. 追加 gap_ids 到主 ids 文件
-    4. 清空 / 删除 gap 文件
-    5. 验证 kb_health 状态从 DANGER → HEALTHY
+kb_search.py 的 _index.merge_from(_gap) 只发生在内存里。本脚本把结果写回磁盘。
 
-4 阶段流水线, 任一阶段失败立即 stop, 不污染状态.
+故障注入的四段 (PAPERKB_FAULT 未设置时不触发; checks/evidence.py 会测):
+  1. memory_merge  内存合并之后、写主文件之前
+  2. index_swap    os.replace 主索引之后、替换 ids 之前
+  3. ids_swap      两个主文件都替换之后、清空 gap 之前
+  4. clear_gap     删掉 gap 索引之后、删掉 gap ids 之前
+
+单次 os.replace 在同一目录里是原子的。两次替换之间若被 SIGKILL, 主索引和
+ids 会短暂不一致; 下一次启动读 merge.journal, 能补完就补完, 否则拷回安全副本。
+被 except 抓住的失败会拷回合并前的字节; clear_gap 阶段 gap 索引可能已经删掉,
+那时改为把合并收完, 而不是丢掉已经写好的主索引。
+
+--no-backup 不保留时间戳备份, 但仍会写临时 rollback 副本, 成功后删除。
+Phase 4 调用本仓库的 kb_health.py, 并把 PES2O_KB_DIR 设成数据目录。
 
 用法:
   py -3 merge_to_disk.py            # 完整执行
   py -3 merge_to_disk.py --dry-run  # 只跑 Phase 0/1 (只读, 不写盘)
-  py -3 merge_to_disk.py --no-backup # 跳过备份 (强烈不推荐)
+  py -3 merge_to_disk.py --no-backup
 
 退出码:
-  0 = 合并成功, DANGER 状态已消除
-  1 = 校验失败 / 异常, 状态未变
-  2 = 写盘失败, 已尝试回滚
+  0 = 合并成功, 或启动时把上次已写完的合并收尾成功
+  1 = 只读校验失败, 主文件未改
+  2 = 写入阶段失败。except 路径会把主文件收成一致状态; SIGKILL 要等下次启动
 """
 from __future__ import annotations
 import argparse
+import json
 import os
 import shutil
+import signal
 import sys
 import time
 from datetime import datetime
 from pathlib import Path
 
-KB_DIR = Path(r'E:/peS2o_kb_faiss')
+# 默认仍是作者本机 Windows 路径。夹具和 Linux 用 PES2O_KB_DIR 指向数据目录
+# （与 dedup_and_reindex.py 同一个环境变量）。
+KB_DIR = Path(os.environ.get('PES2O_KB_DIR', r'E:/peS2o_kb_faiss'))
 FAISS_INDEX = KB_DIR / 'papers.index'
 FAISS_GAP_INDEX = KB_DIR / 'papers_gap.index'
 IDS_FILE = KB_DIR / 'paper_ids.txt'
 IDS_GAP_FILE = KB_DIR / 'papers_gap_ids.txt'
 BACKUP_DIR = KB_DIR / 'rebuild_backups'
+# 提交标记。进程在两次 os.replace 之间被 SIGKILL 时，下一次启动靠它收尾。
+JOURNAL = KB_DIR / 'merge.journal'
+STAGING_INDEX = KB_DIR / 'papers.index.staging'
+STAGING_IDS = KB_DIR / 'paper_ids.txt.staging'
+# --no-backup 仍会写这对临时副本，提交成功后删除。带时间戳的 backup 会保留。
+ROLLBACK_INDEX = KB_DIR / 'papers.index.rollback'
+ROLLBACK_IDS = KB_DIR / 'paper_ids.txt.rollback'
 
 # 单条日志打印函数 (走 stderr, 不污染可能的 stdout 调用方)
 def log(msg: str) -> None:
     ts = datetime.now().strftime('%H:%M:%S')
     print(f'[{ts}] {msg}', file=sys.stderr, flush=True)
+
+
+def _fault(stage: str) -> None:
+    """测试缝。未设置 PAPERKB_FAULT 时什么都不做。
+
+    值形如 ``index_swap:raise`` 或 ``index_swap:kill``。
+    kill 使用 SIGKILL，本进程来不及跑 except。
+    """
+    spec = os.environ.get('PAPERKB_FAULT', '').strip()
+    if not spec:
+        return
+    want, _, mode = spec.partition(':')
+    if want != stage:
+        return
+    log(f'PAPERKB_FAULT {stage}:{mode}')
+    if mode == 'kill':
+        sys.stderr.flush()
+        os.kill(os.getpid(), signal.SIGKILL)
+    if mode == 'raise':
+        raise RuntimeError(f'injected fault at {stage}')
+    raise RuntimeError(f'unknown PAPERKB_FAULT mode {mode!r}')
+
+
+def _read_ids(path: Path) -> list[str]:
+    if not path.exists():
+        return []
+    with open(path, encoding='utf-8') as f:
+        return [line.strip() for line in f if line.strip()]
+
+
+def _ntotal(path: Path) -> int:
+    import faiss
+    return int(faiss.read_index(str(path)).ntotal)
+
+
+def _remove(path: Path) -> None:
+    if path.exists():
+        path.unlink()
+
+
+def _write_journal(payload: dict) -> None:
+    raw = json.dumps(payload).encode('utf-8')
+    tmp = JOURNAL.with_suffix('.tmp')
+    with open(tmp, 'wb') as f:
+        f.write(raw)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, JOURNAL)
+
+
+def _restore_from(src_index: Path, src_ids: Path) -> None:
+    """把安全副本拷回主文件。不移动 src，时间戳备份因此还在。"""
+    tmp_index = KB_DIR / 'papers.index.restore'
+    tmp_ids = KB_DIR / 'paper_ids.txt.restore'
+    shutil.copy2(src_index, tmp_index)
+    shutil.copy2(src_ids, tmp_ids)
+    os.replace(tmp_index, FAISS_INDEX)
+    os.replace(tmp_ids, IDS_FILE)
+
+
+def _drop_temp_rollback() -> None:
+    _remove(ROLLBACK_INDEX)
+    _remove(ROLLBACK_IDS)
+    _remove(STAGING_INDEX)
+    _remove(STAGING_IDS)
+
+
+def _finish_committed(new_n: int) -> None:
+    if _ntotal(FAISS_INDEX) != new_n or len(_read_ids(IDS_FILE)) != new_n:
+        raise RuntimeError(
+            'refusing to drop gap files: main index and ids are not the merged size')
+    phase3_clear_gap(honor_fault=False)
+    _remove(JOURNAL)
+    _drop_temp_rollback()
+
+
+def recover_if_needed(prefer: str) -> str:
+    """收尾一次被打断的合并。
+
+    prefer='finish'：下次启动，能补完已落盘的一半就补完。
+    prefer='rollback'：本次 except 里，只要 gap 文件还在就把主文件拷回合并前。
+
+    返回 'none' | 'byte_identical' | 'fully_merged'。
+    fully_merged 表示主索引和 id 都是合并后的内容，且 gap 文件已删除。
+    """
+    if not JOURNAL.exists():
+        _drop_temp_rollback()
+        return 'none'
+
+    payload = json.loads(JOURNAL.read_text(encoding='utf-8'))
+    old_n = int(payload['old_n'])
+    new_n = int(payload['new_n'])
+    phase = payload['phase']
+    src_index = Path(payload['rollback_index'])
+    src_ids = Path(payload['rollback_ids'])
+    idx_n = _ntotal(FAISS_INDEX) if FAISS_INDEX.exists() else -1
+    ids_n = len(_read_ids(IDS_FILE))
+    both_new = idx_n == new_n and ids_n == new_n
+    both_old = idx_n == old_n and ids_n == old_n
+    gap_index_gone = not FAISS_GAP_INDEX.exists()
+
+    if phase == 'swapped' or (gap_index_gone and both_new):
+        _finish_committed(new_n)
+        return 'fully_merged'
+
+    if prefer == 'rollback':
+        if not src_index.exists() or not src_ids.exists():
+            raise RuntimeError('cannot roll back: safety copies missing')
+        _restore_from(src_index, src_ids)
+        _remove(JOURNAL)
+        _drop_temp_rollback()
+        return 'byte_identical'
+
+    if both_new:
+        _finish_committed(new_n)
+        return 'fully_merged'
+    if both_old:
+        _remove(JOURNAL)
+        _drop_temp_rollback()
+        return 'byte_identical'
+    if idx_n == new_n and ids_n == old_n and len(_read_ids(STAGING_IDS)) == new_n:
+        os.replace(STAGING_IDS, IDS_FILE)
+        _finish_committed(new_n)
+        return 'fully_merged'
+    if src_index.exists() and src_ids.exists():
+        _restore_from(src_index, src_ids)
+        _remove(JOURNAL)
+        _drop_temp_rollback()
+        return 'byte_identical'
+    raise RuntimeError(
+        f'unrecoverable merge journal phase={phase} idx_n={idx_n} ids_n={ids_n}')
 
 
 def phase0_prepare() -> dict:
@@ -71,11 +217,12 @@ def phase0_prepare() -> dict:
             '如果能, 说明 main mtime 没更新 (脚本问题), 请排查')
         sys.exit(1)
 
-    # 磁盘空间检查 (粗估: 合并后索引会变成 main + gap, 临时需要 ~2x 大小)
+    # 磁盘空间: staging(≈ main+gap) + 一份安全副本(≈ main)。
+    # --no-backup 也会写临时副本，提交成功后删掉。
     main_size = FAISS_INDEX.stat().st_size
     gap_size = FAISS_GAP_INDEX.stat().st_size
     expected_new = main_size + gap_size  # IndexFlatIP 是 raw 向量, 合并后大小相加
-    need_free = expected_new * 2  # staging 文件 + backup + 临时
+    need_free = expected_new + main_size
     total, used, free = shutil.disk_usage(KB_DIR)
     log(f'  main.index size: {main_size/1024**2:.1f} MB')
     log(f'  gap.index  size: {gap_size/1024**2:.1f} MB')
@@ -139,6 +286,7 @@ def phase1_load_and_merge(stats: dict) -> tuple[object, list[str]]:
         f'(预期 {stats["n_main"] + stats["n_gap"]:,})')
 
     log(f'  Phase 1 耗时: {time.time()-t0:.1f}s')
+    _fault('memory_merge')
     return idx_main, merged_ids
 
 
@@ -161,40 +309,72 @@ def phase2_backup_and_swap(idx_merged, merged_ids: list[str],
         log(f'  备份完成, 大小: '
             f'{(backup_index.stat().st_size + backup_ids.stat().st_size)/1024**2:.1f} MB')
     else:
-        log('  ⚠ --no-backup 已启用, 跳过备份 (出问题时无法回滚)')
+        log('  --no-backup: 不保留时间戳备份; 仍写临时 rollback 副本, 提交成功后删除')
+
+    # 安全副本必须在第一次 os.replace 之前落盘。
+    if do_backup:
+        safety_index = backup_index
+        safety_ids = backup_ids
+    else:
+        log('  写临时 rollback 副本 ...')
+        shutil.copy2(FAISS_INDEX, ROLLBACK_INDEX)
+        shutil.copy2(IDS_FILE, ROLLBACK_IDS)
+        safety_index = ROLLBACK_INDEX
+        safety_ids = ROLLBACK_IDS
 
     # ── 2b. 写到 staging 文件 ──
     import faiss
-    staging_index = KB_DIR / 'papers.index.staging'
-    staging_ids = KB_DIR / 'paper_ids.txt.staging'
-    log(f'  写 staging: {staging_index.name} ...')
-    faiss.write_index(idx_merged, str(staging_index))
+    log(f'  写 staging: {STAGING_INDEX.name} ...')
+    faiss.write_index(idx_merged, str(STAGING_INDEX))
     log(f'  staging.index size: '
-        f'{staging_index.stat().st_size/1024**2:.1f} MB')
+        f'{STAGING_INDEX.stat().st_size/1024**2:.1f} MB')
 
-    log(f'  写 staging: {staging_ids.name} ...')
-    with open(staging_ids, 'w', encoding='utf-8') as f:
+    log(f'  写 staging: {STAGING_IDS.name} ...')
+    with open(STAGING_IDS, 'w', encoding='utf-8') as f:
         for pid in merged_ids:
             f.write(pid + '\n')
     log(f'  staging.ids  size: '
-        f'{staging_ids.stat().st_size/1024**2:.1f} MB')
+        f'{STAGING_IDS.stat().st_size/1024**2:.1f} MB')
 
-    # ── 2c. atomic swap (os.replace 在 Windows 是原子的) ──
+    expect = stats['n_main'] + stats['n_gap']
+    if (faiss.read_index(str(STAGING_INDEX)).ntotal != expect
+            or len(_read_ids(STAGING_IDS)) != expect):
+        raise RuntimeError('staging pair failed verification')
+
+    _write_journal({
+        'phase': 'swapping',
+        'old_n': stats['n_main'],
+        'new_n': expect,
+        'rollback_index': str(safety_index),
+        'rollback_ids': str(safety_ids),
+    })
+
+    # ── 2c. 两次 os.replace。单次替换是原子的，两次之间不是。──
     log('  atomic swap: papers.index ...')
-    os.replace(str(staging_index), str(FAISS_INDEX))
+    os.replace(str(STAGING_INDEX), str(FAISS_INDEX))
+    _fault('index_swap')
     log('  atomic swap: paper_ids.txt ...')
-    os.replace(str(staging_ids), str(IDS_FILE))
+    os.replace(str(STAGING_IDS), str(IDS_FILE))
+    _fault('ids_swap')
     log(f'  Phase 2 耗时: {time.time()-t0:.1f}s')
 
-    # 验证写盘结果
     n_new = faiss.read_index(str(FAISS_INDEX)).ntotal
-    log(f'  写盘验证: main.ntotal = {n_new:,}  '
-        f'(预期 {stats["n_main"] + stats["n_gap"]:,})')
-    assert n_new == stats['n_main'] + stats['n_gap'], '写盘后 ntotal 不一致!'
+    n_ids = len(_read_ids(IDS_FILE))
+    log(f'  写盘验证: main.ntotal = {n_new:,} ids = {n_ids:,}  '
+        f'(预期 {expect:,})')
+    if n_new != expect or n_ids != expect:
+        raise RuntimeError('写盘后主索引与 ids 不一致')
+    _write_journal({
+        'phase': 'swapped',
+        'old_n': stats['n_main'],
+        'new_n': expect,
+        'rollback_index': str(safety_index),
+        'rollback_ids': str(safety_ids),
+    })
 
 
-def phase3_clear_gap() -> None:
-    """清空 gap 文件 (写)"""
+def phase3_clear_gap(*, honor_fault: bool = False) -> None:
+    """清空 gap 文件 (写)。honor_fault 只给正常提交流程用。"""
     log('══ Phase 3: 清空 gap 文件 (写) ══')
     if FAISS_GAP_INDEX.exists():
         size = FAISS_GAP_INDEX.stat().st_size
@@ -202,6 +382,9 @@ def phase3_clear_gap() -> None:
         log(f'  删除 {FAISS_GAP_INDEX.name} ({size/1024**2:.1f} MB)')
     else:
         log(f'  {FAISS_GAP_INDEX.name} 已不存在, 跳过')
+
+    if honor_fault:
+        _fault('clear_gap')
 
     if IDS_GAP_FILE.exists():
         size = IDS_GAP_FILE.stat().st_size
@@ -215,11 +398,16 @@ def phase4_verify() -> int:
     """验证: 再次跑 kb_health 看 DANGER 是否消失"""
     log('══ Phase 4: 验证 (只读) ══')
     import subprocess
-    log('  跑 kb_health.py --sample 0 ...')
+    health = Path(__file__).resolve().parent / 'kb_health.py'
+    log(f'  跑 {health.name} --sample 0 (PES2O_KB_DIR={KB_DIR}) ...')
+    env = os.environ.copy()
+    env['PES2O_KB_DIR'] = str(KB_DIR)
+    env.pop('PAPERKB_FAULT', None)
     result = subprocess.run(
-        [sys.executable, str(KB_DIR / 'kb_health.py'), '--sample', '0'],
+        [sys.executable, str(health), '--sample', '0'],
         capture_output=True, text=True, encoding='utf-8', errors='replace',
-        cwd=str(KB_DIR),
+        cwd=str(health.parent),
+        env=env,
     )
     log(f'  kb_health exit code: {result.returncode}')
 
@@ -245,7 +433,7 @@ def main():
     ap.add_argument('--dry-run', action='store_true',
                     help='只跑 Phase 0/1 (只读校验), 不写盘')
     ap.add_argument('--no-backup', action='store_true',
-                    help='跳过 backup 步骤 (强烈不推荐, 出问题无法回滚)')
+                    help='不保留时间戳备份。临时 rollback 副本仍会写, 成功后删除')
     ap.add_argument('--skip-verify', action='store_true',
                     help='跳过 Phase 4 验证')
     args = ap.parse_args()
@@ -257,6 +445,17 @@ def main():
     log('═══════════════════════════════════════════════════════════')
 
     t_total = time.time()
+
+    try:
+        recovered = recover_if_needed('finish')
+    except Exception as e:
+        log(f'❌ 恢复未完成的合并失败: {e}')
+        sys.exit(2)
+    if recovered == 'fully_merged':
+        log('恢复: 上次合并已经写完主索引, 本次补清了 gap 并退出')
+        sys.exit(0)
+    if recovered == 'byte_identical':
+        log('恢复: 主索引已回到合并前的字节, 继续尝试合并')
 
     try:
         stats = phase0_prepare()
@@ -281,16 +480,26 @@ def main():
                                 do_backup=not args.no_backup)
     except Exception as e:
         log(f'❌ Phase 2 失败: {e}')
-        log('  已尝试保留原状态, 请检查磁盘/权限')
+        try:
+            outcome = recover_if_needed('rollback')
+            log(f'  Phase 2 修复结果: {outcome}')
+        except Exception as repair_error:
+            log(f'  Phase 2 修复失败: {repair_error}')
         sys.exit(2)
 
     try:
-        phase3_clear_gap()
+        phase3_clear_gap(honor_fault=True)
     except Exception as e:
         log(f'❌ Phase 3 失败: {e}')
-        log('  主索引已更新, 但 gap 未清空, 下次启动会重复 merge')
-        log('  手动清空: rm papers_gap.index papers_gap_ids.txt')
+        try:
+            outcome = recover_if_needed('rollback')
+            log(f'  Phase 3 修复结果: {outcome}')
+        except Exception as repair_error:
+            log(f'  Phase 3 修复失败: {repair_error}')
         sys.exit(2)
+
+    _remove(JOURNAL)
+    _drop_temp_rollback()
 
     log(f'✅ 合并完成, 总耗时: {time.time()-t_total:.1f}s')
     log(f'   main: {stats["n_main"]:,} + gap: {stats["n_gap"]:,} '

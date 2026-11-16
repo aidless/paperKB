@@ -83,6 +83,17 @@ jobs:
           echo "::notice::Mock unit tests completed"
 
       # ─────────────────────────────────────────────────────────
+      # Step 5b: 离线重算 README 里的实测数字（小夹具，不下载模型）
+      # ─────────────────────────────────────────────────────────
+      - name: Recompute README numbers
+        timeout-minutes: 5
+        env:
+          HF_HUB_OFFLINE: '1'
+          TRANSFORMERS_OFFLINE: '1'
+          PYTHONIOENCODING: 'utf-8'
+        run: make check
+
+      # ─────────────────────────────────────────────────────────
       # Step 6: 烟雾测试 (验证 kb_search / merge_to_disk / dedup_and_reindex 可 import)
       # 不跑完整功能 (避免依赖 KB 数据)
       # timeout 1min: 3 个 import + faiss 加载, 正常 5-10s
