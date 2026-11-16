@@ -19,15 +19,22 @@
   py -3 kb_health.py --sample 5000  # 抽样核对 ID(默认 2000)
   py -3 kb_health.py --json     # 输出 JSON 给其他脚本消费
 
-退出码:
-  0 = 健康(差距 < 1%)
-  1 = 警告(1% <= 差距 < 5%)
-  2 = 危险(差距 >= 5% 或连续 48h 未跑)
+退出码 (main() 的实际判定):
+  0 = HEALTHY: |main+gap 与 SQLite 行数差| < 1%, 且 gap 未合并时长 < 24h,
+      且 daily_grow 不是 stale
+  1 = WARN: 行数差 >= 1% 且 < 5%, 或 gap 未合并时长在 [24h, 72h),
+      同时 daily_grow 不是 stale、gap 未到 72h、行数差 < 5%
+  2 = DANGER: 行数差 >= 5%, 或 gap 未合并时长 >= 72h, 或 daily_grow 年龄 >= 72h
+  daily_grow 落在 [36h, 72h) 时内部标成 warn, 但只要不是 stale 就不改变退出码。
+  没有 daily_grow_state.json 时 freshness 记为 unknown, 不因此失败。
+  ID 抽样命中率只打印, 不参与退出码。
+  旧说明里的「48h 未跑即危险」与代码不符。
 """
 from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sqlite3
 import sys
 import time
@@ -45,7 +52,8 @@ if not logger.handlers:
     logger.setLevel(logging.INFO)
     logger.propagate = False
 
-KB_DIR = Path(r'E:/peS2o_kb_faiss')
+# 默认是作者本机路径。PES2O_KB_DIR 与 dedup_and_reindex.py 相同。
+KB_DIR = Path(os.environ.get('PES2O_KB_DIR', r'E:/peS2o_kb_faiss'))
 FAISS_INDEX = KB_DIR / 'papers.index'
 FAISS_GAP_INDEX = KB_DIR / 'papers_gap.index'
 IDS_FILE = KB_DIR / 'paper_ids.txt'
@@ -272,7 +280,7 @@ def main():
 
     t0 = time.time()
     print('═══════════════════════════════════════════════════════════')
-    print('  KB Health Check — E:/peS2o_kb_faiss/')
+    print(f'  KB Health Check — {KB_DIR}')
     print(f'  {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}')
     print('═══════════════════════════════════════════════════════════')
 
@@ -407,7 +415,7 @@ def main():
     try:
         import shutil
         total, used, free = shutil.disk_usage(KB_DIR)
-        print(f'    E: total {human_bytes(total)}, used {human_bytes(used)}, '
+        print(f'    disk total {human_bytes(total)}, used {human_bytes(used)}, '
               f'free {human_bytes(free)} ({free/total*100:.1f}% free)')
     except Exception as e:
         print(f'    disk check failed: {e}')

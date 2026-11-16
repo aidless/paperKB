@@ -14,10 +14,10 @@
 
 | ID | 假设 | 检验方式 | 成功标准 |
 |---|---|---|---|
-| H1 | 检索有超时保护且**不抛异常** | `kb_search.py:380` 的三层预算（`total_timeout`/`model_timeout`/`sqlite_busy_timeout`）+ `tests/simulate_ci_timeout.py` | 超时后优雅降级返回已 fetch 的部分结果 + 提示，不抛异常 |
-| H2 | 健康检查**量化**索引漂移 | `kb_health.py` 检测主/gap 索引与 SQLite 差距 + 增量未合并时长（24h/72h 阈值） | 退出码 0=健康 / 1=警告 / 2=危险，语义明确 |
-| H3 | 增量合并是**原子的** | `merge_to_disk.py` 4 阶段（in-memory merge → atomic swap → 清 gap） | 任一阶段失败即 stop，不污染主索引状态 |
-| H4 | 单元路径真实可跑 | `tests/test_kb_search_unit.py`（mock KB：100 papers + 内存 sqlite + 假 sentence-transformers） | 19 项单测通过（~8.5 秒），CI 在 ubuntu-latest 跑 |
+| H1 | 检索有超时保护且调用方不看到未捕获异常 | `def search` 的三层预算（`total_timeout`/`model_timeout`/`sqlite_busy_timeout`）。慢模型、合作式总预算、SQLite 锁错误由 `make check` 在小夹具上复算 | 超时或锁错误后返回已拿到的结果（慢模型则是空列表），不把这些错误抛给调用方。挂死的模型加载和长查询不会被打断 |
+| H2 | 健康检查**量化**索引漂移 | `kb_health.py` 检测主/gap 索引与 SQLite 行数差 + 增量未合并时长（24h/72h 阈值） | 退出码 0=健康 / 1=警告 / 2=危险。daily_grow 的 36h–72h 带不单独把退出码打成 1；ID 抽样不参与退出码 |
+| H3 | 增量合并失败后主文件不停留在半写入 | `merge_to_disk.py` 四段故障点（memory_merge / index_swap / ids_swap / clear_gap），`make check` 对每段 raise 和 SIGKILL | raise 之后主文件是合并前字节或完整合并。SIGKILL 可能留下 torn，下一次启动收成完整合并。单次 `os.replace` 之间不是一个原子事务 |
+| H4 | 单元路径真实可跑 | `tests/test_kb_search_unit.py`（mock KB：100 papers + 内存 sqlite + 假 sentence-transformers） | mock 单测条数由 `make check` 用语法树重数。墙钟时间不作为结果 |
 
 ## 3. 评测方案
 
@@ -35,7 +35,7 @@
 
 **不证明什么（诚实边界）**：
 - 不证明真实 54 万语料上的**端到端性能**：单测用 mock（100 papers）；真实 8GB KB 的检索延迟/召回只有本地集成测试 `test_kb_search.py` 能给出，而它依赖 `E:/peS2o_kb_faiss`（Windows 路径），在 Linux 环境不可复现。
-- 不证明 `smart_rerank` 的**类别/年份权重是最优的**：`YEAR_BONUS` 与 `LLM_CATEGORY_BONUS`（`smart_rerank.py:133-155`）是人工设定常数，未做参数扫描，不代表最优解。
+- 不证明 `smart_rerank` 的**类别/年份权重是最优的**：`YEAR_BONUS` 与 `LLM_CATEGORY_BONUS` 是人工设定常数，未做参数扫描，不代表最优解。`make check` 只测量这两条手写向量上的名次翻转。
 - 不证明**检索无漏**：纯向量检索 + 固定嵌入模型（`all-MiniLM-L6-v2`）会有语义边界外的漏检，工具包只做检索不做覆盖度证明。
 - 工具包是**本地工具链**，不是分布式服务；并发写入无锁，单进程使用。
 

@@ -49,7 +49,8 @@ import faiss
 # ════════════════════════════════════════════════════════════════
 # Config
 # ════════════════════════════════════════════════════════════════
-KB_DIR = Path(r'E:/peS2o_kb_faiss')
+# 默认是作者本机路径。PES2O_KB_DIR 与 dedup_and_reindex.py / merge_to_disk.py 相同。
+KB_DIR = Path(os.environ.get('PES2O_KB_DIR', r'E:/peS2o_kb_faiss'))
 FAISS_INDEX = KB_DIR / 'papers.index'
 FAISS_GAP_INDEX = KB_DIR / 'papers_gap.index'  # 增量索引(daily_grow 期间生成的补丁)
 SQLITE_DB = KB_DIR / 'papers.db'
@@ -154,9 +155,9 @@ DEFAULT_SQLITE_BUSY_TIMEOUT = 5.0 # SQLite 锁等待
 def load_resources(model_timeout: float = DEFAULT_MODEL_TIMEOUT,
                    sqlite_busy_timeout: float = DEFAULT_SQLITE_BUSY_TIMEOUT):
     global _model, _index, _paper_ids, _paper_ids_raw, _id_source, _conn
-    from sentence_transformers import SentenceTransformer
 
     if _model is None:
+        from sentence_transformers import SentenceTransformer
         print(f'Loading model: {MODEL_NAME}...', end=' ', flush=True)
         t0 = time.time()
         _model = SentenceTransformer(MODEL_NAME)
@@ -489,13 +490,22 @@ def _search_impl(
         if pid_raw in seen_pids:
             continue
 
-        # Lookup SQLite by paper_id (string) — 必须用原始 ID
-        cur = conn.cursor()
-        cur.execute(
-            'SELECT paper_id, title, fields, text_prefix, abstract, created, year, categories, authors, source, version FROM papers WHERE paper_id = ?',
-            (pid_raw,),
-        )
-        row = cur.fetchone()
+        # Lookup SQLite by paper_id (string) — 必须用原始 ID.
+        # busy_timeout 到期后 SQLite 抛 OperationalError。这里停在已拿到的结果上，
+        # 不把锁等待冒泡成未捕获异常。长查询本身不会被 busy_timeout 打断。
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                'SELECT paper_id, title, fields, text_prefix, abstract, created, year, categories, authors, source, version FROM papers WHERE paper_id = ?',
+                (pid_raw,),
+            )
+            row = cur.fetchone()
+        except sqlite3.OperationalError as e:
+            timed_out = True
+            print(f'\n  ⚠ SQLite busy: {e}. 提前终止, '
+                  f'返回已找到的 {len(results)} 条结果.',
+                  file=sys.stderr)
+            break
         if not row:
             paper = {'paper_id': pid_raw, 'title': '(not in SQLite)', 'authors': '[]',
                      'year': '', 'categories': '', 'source': '', 'text_prefix': ''}
